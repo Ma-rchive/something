@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+
+<meta
+  name="viewport"
+  content="width=device-width,
+  initial-scale=1,
+  maximum-scale=1,
+  user-scalable=no"
+>
+
+<title>Ghost Rule</title>
+
+<style>
+*{
+  box-sizing:border-box;
+  margin:0;
+  padding:0;
+}
+
+html,body{
+  width:100%;
+  height:100%;
+  overflow:hidden;
+  background:#000;
+}
+
+body{
+  font-family:"Courier New",monospace;
+}
+
+#stage{
+  position:fixed;
+  inset:0;
+  background:#000;
+  overflow:hidden;
+}
+
+/* ASCII VIDEO (background) */
+
+#ascii{
+  position:absolute;
+  inset:0;
+
+  width:100%;
+  height:100%;
+
+  display:block;
+}
+
+/* PLAYER WIDGET */
+
+#player{
+  position:absolute;
+
+  left:50%;
+  top:50%;
+
+  transform:translate(-50%,-50%);
+
+  width:min(92vw,620px);
+
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+
+  z-index:10;
+}
+
+#titleCanvas{
+  width:100%;
+  height:110px;
+}
+
+#waveCanvas{
+  width:100%;
+  height:90px;
+
+  margin-top:4px;
+}
+
+#barCanvas{
+  width:100%;
+  height:22px;
+
+  margin-top:2px;
+}
+
+#controlsCanvas{
+  width:180px;
+  height:46px;
+
+  margin-top:6px;
+
+  cursor:pointer;
+}
+
+/* hidden media */
+
+#video{
+  position:fixed;
+
+  width:1px;
+  height:1px;
+
+  opacity:0;
+
+  pointer-events:none;
+}
+</style>
+</head>
+
+<body>
+
+<div id="stage">
+
+  <canvas id="ascii"></canvas>
+
+  <div id="player">
+    <canvas id="titleCanvas"></canvas>
+    <canvas id="waveCanvas"></canvas>
+    <canvas id="barCanvas"></canvas>
+    <canvas id="controlsCanvas"></canvas>
+  </div>
+
+</div>
+
+
+<video
+  id="video"
+  src="video.mp4"
+  muted
+  playsinline
+  webkit-playsinline
+  preload="auto">
+</video>
+
+<audio
+  id="audio"
+  src="audio.mp3"
+  preload="auto">
+</audio>
+
+
+<script>
+(() => {
+
+"use strict";
+
+
+/* ==================================================
+   KONFIGURASI
+
+   Timestamp di bawah dipas-in berdasarkan analisa
+   akustik langsung ke file audio.mp3 kamu (deteksi
+   tempo asli lagu 97.5 BPM, dicocokkan ke titik
+   tekanan/onset vokal terkuat per baris), bukan
+   tebakan generik. Tetap boleh kamu geser manual
+   kalau pas didengar ada baris yang meleset
+   (tinggal ubah angka "time", satuan detik).
+================================================== */
+
+const LYRICS = [
+
+  {time: 0,     text: "ローリンガール"},
+
+  {time: 2.51,  text: "「問題ない」と呟いた"},
+  {time: 6.83,  text: "言葉は失われた"},
+  {time: 9.29,  text: "どうなったって良いんだってさ"},
+  {time: 13.92, text: "間違いだって起こしちゃおうと誘う、坂道"},
+
+  {time: 20.07, text: "もう一回、もう一回"},
+  {time: 22.52, text: "私をどうか転がしてと"},
+  {time: 27.00, text: "少女は言う 少女は言う"},
+  {time: 30.63, text: "無口に意味を重ねながら！"},
+
+  {time: 34.83, text: "「もう良いかい？」"},
+  {time: 36.85, text: "「もう少し"},
+  {time: 38.25, text: "もうすぐ何か見えるだろうと"},
+  {time: 43.37, text: "息を止めるの、今」"},
+
+];
+
+function getCurrentLyric(t){
+
+  let current = LYRICS[0];
+
+  for(let i=0; i<LYRICS.length; i++){
+
+    if(LYRICS[i].time <= t){
+
+      current = LYRICS[i];
+
+    }else{
+
+      break;
+
+    }
+
+  }
+
+  return current.text;
+
+}
+
+let currentTitleText = LYRICS[0].text;
+
+
+/* ==================================================
+   ELEMENT
+================================================== */
+
+const video =
+  document.getElementById("video");
+
+const audio =
+  document.getElementById("audio");
+
+const asciiCanvas =
+  document.getElementById("ascii");
+
+const asciiCtx =
+  asciiCanvas.getContext(
+    "2d",
+    {willReadFrequently:true}
+  );
+
+const titleCanvas =
+  document.getElementById("titleCanvas");
+
+const titleCtx =
+  titleCanvas.getContext("2d");
+
+const waveCanvas =
+  document.getElementById("waveCanvas");
+
+const waveCtx =
+  waveCanvas.getContext(
+    "2d",
+    {willReadFrequently:true}
+  );
+
+const barCanvas =
+  document.getElementById("barCanvas");
+
+const barCtx =
+  barCanvas.getContext("2d");
+
+const controlsCanvas =
+  document.getElementById("controlsCanvas");
+
+const controlsCtx =
+  controlsCanvas.getContext(
+    "2d",
+    {willReadFrequently:true}
+  );
+
+
+/* ==================================================
+   AUDIO ANALYSER
+================================================== */
+
+let audioContext;
+let analyser;
+let source;
+
+function setupAudio(){
+
+  if(audioContext)
+    return;
+
+  try{
+
+    audioContext =
+      new (
+        window.AudioContext ||
+        window.webkitAudioContext
+      )();
+
+    analyser =
+      audioContext.createAnalyser();
+
+    analyser.fftSize = 2048;
+
+    analyser.smoothingTimeConstant = 0.72;
+
+    source =
+      audioContext.createMediaElementSource(audio);
+
+    source.connect(analyser);
+
+    analyser.connect(
+      audioContext.destination
+    );
+
+  }catch(e){
+
+    console.log(
+      "Audio analyser error:",
+      e
+    );
+
+  }
+
+}
+
+
+/* ==================================================
+   GIGI TEKSTUR (TOOTH TEXTURE ENGINE)
+   Mengubah bentuk apapun (teks, gelombang,
+   bar) menjadi tekstur gigi-gigi kecil yang
+   mengikuti arah tepi bentuknya - seperti
+   pada video referensi.
+================================================== */
+
+function drawTeethFromMask(
+  ctx,
+  maskData,
+  w,
+  h,
+  originX,
+  originY,
+  step,
+  toothLen,
+  color
+){
+
+  const data = maskData.data;
+
+  function lum(x,y){
+
+    if(x<0 || y<0 || x>=w || y>=h)
+      return 0;
+
+    return data[(y*w+x)*4];
+
+  }
+
+  const k =
+    Math.max(2, Math.round(step*0.7));
+
+  ctx.fillStyle = color;
+
+  for(let y=0; y<h; y+=step){
+
+    for(let x=0; x<w; x+=step){
+
+      const v = lum(x,y);
+
+      if(v < 60)
+        continue;
+
+      const gx =
+        lum(x+k,y) - lum(x-k,y);
+
+      const gy =
+        lum(x,y+k) - lum(x,y-k);
+
+      const mag =
+        Math.hypot(gx,gy);
+
+      let angle;
+
+      if(mag < 15){
+
+        angle = 0;
+
+      }else{
+
+        angle =
+          Math.atan2(gy,gx);
+
+      }
+
+      const px = originX + x;
+      const py = originY + y;
+
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+
+      const perpx = -dy;
+      const perpy = dx;
+
+      const tipX = px + dx*toothLen;
+      const tipY = py + dy*toothLen;
+
+      const baseW = toothLen*0.6;
+
+      const b1x = px + perpx*baseW/2;
+      const b1y = py + perpy*baseW/2;
+      const b2x = px - perpx*baseW/2;
+      const b2y = py - perpy*baseW/2;
+
+      ctx.beginPath();
+      ctx.moveTo(tipX,tipY);
+      ctx.lineTo(b1x,b1y);
+      ctx.lineTo(b2x,b2y);
+      ctx.closePath();
+      ctx.fill();
+
+    }
+
+  }
+
+}
+
+
+/* ==================================================
+   CANVAS SIZE
+================================================== */
+
+let cols = 80;
+let fontSize = 8;
+
+const dpr =
+  window.devicePixelRatio || 1;
+
+function fitCanvas(canvas, ctx){
+
+  const cssW = canvas.clientWidth;
+  const cssH = canvas.clientHeight;
+
+  canvas.width = Math.round(cssW*dpr);
+  canvas.height = Math.round(cssH*dpr);
+
+  ctx.setTransform(
+    dpr, 0, 0, dpr, 0, 0
+  );
+
+}
+
+function resize(){
+
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  const short = Math.min(w,h);
+
+
+  /* ASCII resolution */
+
+  if(short < 500){
+
+    cols = 45;
+    fontSize = 6;
+
+  }else if(w < 700){
+
+    cols = 60;
+    fontSize = 7;
+
+  }else if(w < 1200){
+
+    cols = 90;
+    fontSize = 9;
+
+  }else{
+
+    cols = 125;
+    fontSize = 11;
+
+  }
+
+
+  asciiCanvas.width = w;
+  asciiCanvas.height = h;
+
+
+  fitCanvas(titleCanvas, titleCtx);
+  fitCanvas(waveCanvas, waveCtx);
+  fitCanvas(barCanvas, barCtx);
+  fitCanvas(controlsCanvas, controlsCtx);
+
+
+  titleTeethCache = null;
+  iconCache = {};
+
+}
+
+window.addEventListener("resize", resize);
+
+window.addEventListener(
+  "orientationchange",
+  () => setTimeout(resize, 300)
+);
+
+
+/* ==================================================
+   OFFSCREEN ASCII (background video)
+================================================== */
+
+const offscreen =
+  document.createElement("canvas");
+
+const offctx =
+  offscreen.getContext(
+    "2d",
+    {willReadFrequently:true}
+  );
+
+const chars =
+  " .:-=+*#%@";
+
+function drawASCII(){
+
+  if(video.readyState < 2 || !video.videoWidth)
+    return;
+
+  const aspect =
+    video.videoHeight / video.videoWidth;
+
+  const rows =
+    Math.max(1, Math.floor(cols*aspect*0.55));
+
+  offscreen.width = cols;
+  offscreen.height = rows;
+
+  offctx.drawImage(video, 0, 0, cols, rows);
+
+  let data;
+
+  try{
+
+    data =
+      offctx.getImageData(0,0,cols,rows).data;
+
+  }catch(e){
+
+    console.log("getImageData blocked:", e);
+    return;
+
+  }
+
+  const cellW = fontSize*.60;
+  const cellH = fontSize*.82;
+
+  const totalW = cols*cellW;
+  const totalH = rows*cellH;
+
+  const scale =
+    Math.min(
+      window.innerWidth/totalW,
+      window.innerHeight/totalH,
+      1
+    );
+
+  asciiCtx.clearRect(
+    0,0,asciiCanvas.width,asciiCanvas.height
+  );
+
+  asciiCtx.save();
+
+  asciiCtx.translate(
+    (asciiCanvas.width - totalW*scale)/2,
+    (asciiCanvas.height - totalH*scale)/2
+  );
+
+  asciiCtx.scale(scale,scale);
+
+  asciiCtx.font =
+    `${fontSize}px "Courier New",monospace`;
+
+  asciiCtx.textBaseline = "top";
+  asciiCtx.textAlign = "left";
+
+  for(let y=0;y<rows;y++){
+
+    for(let x=0;x<cols;x++){
+
+      const i = (y*cols+x)*4;
+
+      const r = data[i];
+      const g = data[i+1];
+      const b = data[i+2];
+
+      const brightness =
+        0.299*r + 0.587*g + 0.114*b;
+
+      const index =
+        Math.min(
+          chars.length-1,
+          Math.floor(brightness/255*(chars.length-1))
+        );
+
+      const char = chars[index];
+
+      if(char !== " "){
+
+        asciiCtx.fillStyle =
+          `rgb(${r},${g},${b})`;
+
+        asciiCtx.fillText(char, x*cellW, y*cellH);
+
+      }
+
+    }
+
+  }
+
+  asciiCtx.restore();
+
+}
+
+
+/* ==================================================
+   TITLE (dibangun sekali, memakai tekstur gigi)
+================================================== */
+
+let titleTeethCache = null;
+
+function buildTitleTeeth(text){
+
+  const cssW = titleCanvas.clientWidth;
+  const cssH = titleCanvas.clientHeight;
+
+  const w = Math.round(cssW);
+  const h = Math.round(cssH);
+
+  const off = document.createElement("canvas");
+
+  off.width = w;
+  off.height = h;
+
+  const octx = off.getContext("2d");
+
+  let fontPx = Math.floor(h*0.6);
+
+  octx.textAlign = "center";
+  octx.textBaseline = "middle";
+
+  /*
+    Kecilkan font otomatis kalau baris lirik
+    kepanjangan supaya tidak kepotong.
+  */
+
+  const maxTextWidth = w*0.92;
+
+  for(let tries=0; tries<12; tries++){
+
+    octx.font =
+      `900 ${fontPx}px Arial, "Helvetica Neue", sans-serif`;
+
+    const measured =
+      octx.measureText(text).width;
+
+    if(measured <= maxTextWidth || fontPx <= 14){
+
+      break;
+
+    }
+
+    fontPx =
+      Math.floor(
+        fontPx * (maxTextWidth/measured) * 0.96
+      );
+
+  }
+
+  octx.strokeStyle = "#fff";
+  octx.lineWidth = Math.max(4, fontPx*0.11);
+
+  octx.strokeText(
+    text,
+    w/2,
+    h/2 + h*0.02
+  );
+
+  const mask = octx.getImageData(0,0,w,h);
+
+  const out = document.createElement("canvas");
+
+  out.width = w;
+  out.height = h;
+
+  const outCtx = out.getContext("2d");
+
+  const step =
+    Math.max(3, Math.round(fontPx*0.045));
+
+  const toothLen = step*1.7;
+
+  drawTeethFromMask(
+    outCtx, mask, w, h, 0, 0, step, toothLen, "#fff"
+  );
+
+  titleTeethCache = out;
+
+}
+
+function drawTitle(){
+
+  if(!titleTeethCache)
+    buildTitleTeeth(currentTitleText);
+
+  const cssW = titleCanvas.clientWidth;
+  const cssH = titleCanvas.clientHeight;
+
+  titleCtx.clearRect(0,0,cssW,cssH);
+
+  titleCtx.drawImage(
+    titleTeethCache,
+    0,0,cssW,cssH
+  );
+
+}
+
+function updateLyrics(){
+
+  const t = audio.currentTime || 0;
+
+  const text = getCurrentLyric(t);
+
+  if(text !== currentTitleText){
+
+    currentTitleText = text;
+
+    buildTitleTeeth(currentTitleText);
+
+  }
+
+}
+
+
+/* ==================================================
+   WAVEFORM (bereaksi ke audio, tekstur gigi)
+================================================== */
+
+const HIST_LEN = 90;
+
+let waveHistory =
+  new Array(HIST_LEN).fill(0);
+
+let waveData;
+
+function pushWaveSample(){
+
+  if(!analyser){
+
+    waveHistory.shift();
+    waveHistory.push(0);
+
+    return;
+
+  }
+
+  if(!waveData){
+
+    waveData =
+      new Uint8Array(analyser.fftSize);
+
+  }
+
+  analyser.getByteTimeDomainData(waveData);
+
+  let peak = 0;
+
+  for(let i=0;i<waveData.length;i++){
+
+    const v = Math.abs(waveData[i]-128)/128;
+
+    if(v>peak) peak = v;
+
+  }
+
+  waveHistory.shift();
+  waveHistory.push(peak);
+
+}
+
+function drawWaveform(){
+
+  const cssW = waveCanvas.clientWidth;
+  const cssH = waveCanvas.clientHeight;
+
+  const w = Math.round(cssW);
+  const h = Math.round(cssH);
+
+  const mCanvas = document.createElement("canvas");
+
+  mCanvas.width = w;
+  mCanvas.height = h;
+
+  const mctx = mCanvas.getContext("2d");
+
+  mctx.fillStyle = "#fff";
+
+  const center = h/2;
+
+  const n = waveHistory.length;
+
+  const stepX = w/(n-1);
+
+  const maxH = h*0.42;
+
+  mctx.beginPath();
+
+  mctx.moveTo(0, center - waveHistory[0]*maxH);
+
+  for(let i=1;i<n;i++){
+
+    mctx.lineTo(
+      i*stepX,
+      center - waveHistory[i]*maxH
+    );
+
+  }
+
+  for(let i=n-1;i>=0;i--){
+
+    mctx.lineTo(
+      i*stepX,
+      center + waveHistory[i]*maxH
+    );
+
+  }
+
+  mctx.closePath();
+  mctx.fill();
+
+  const mask = mctx.getImageData(0,0,w,h);
+
+  waveCtx.clearRect(0,0,cssW,cssH);
+
+  const step = Math.max(3, Math.round(h*0.05));
+
+  const toothLen = step*1.6;
+
+  drawTeethFromMask(
+    waveCtx, mask, w, h, 0, 0, step, toothLen, "#fff"
+  );
+
+}
+
+
+/* ==================================================
+   PROGRESS BAR
+================================================== */
+
+function drawProgressBar(){
+
+  const w = barCanvas.clientWidth;
+  const h = barCanvas.clientHeight;
+
+  barCtx.clearRect(0,0,w,h);
+
+  const step = Math.max(5, Math.round(w*0.018));
+
+  const toothLen = h*0.55;
+
+  const baseY = h*0.72;
+
+  const duration = audio.duration || 0;
+  const current = audio.currentTime || 0;
+
+  const progress =
+    duration>0 ? current/duration : 0;
+
+  for(let x=step/2; x<w; x+=step){
+
+    const played = (x/w) <= progress;
+
+    barCtx.fillStyle =
+      played ?
+        "rgba(255,255,255,0.95)" :
+        "rgba(255,255,255,0.32)";
+
+    barCtx.beginPath();
+
+    barCtx.moveTo(x, baseY-toothLen);
+    barCtx.lineTo(x-step*0.35, baseY);
+    barCtx.lineTo(x+step*0.35, baseY);
+
+    barCtx.closePath();
+    barCtx.fill();
+
+  }
+
+  barCtx.strokeStyle = "rgba(255,255,255,0.9)";
+  barCtx.lineWidth = 2;
+
+  barCtx.beginPath();
+  barCtx.moveTo(0, baseY);
+  barCtx.lineTo(w, baseY);
+  barCtx.stroke();
+
+}
+
+
+/* ==================================================
+   KONTROL (prev / play-pause / next)
+================================================== */
+
+let iconCache = {};
+
+function buildIconMask(type, size){
+
+  const off = document.createElement("canvas");
+
+  off.width = size;
+  off.height = size;
+
+  const octx = off.getContext("2d");
+
+  octx.fillStyle = "#fff";
+
+  const m = size*0.16;
+
+  if(type === "prev"){
+
+    octx.fillRect(m, m, size*0.14, size-2*m);
+
+    octx.beginPath();
+    octx.moveTo(size-m, m);
+    octx.lineTo(size-m, size-m);
+    octx.lineTo(m+size*0.14, size/2);
+    octx.closePath();
+    octx.fill();
+
+  }else if(type === "next"){
+
+    octx.beginPath();
+    octx.moveTo(m, m);
+    octx.lineTo(m, size-m);
+    octx.lineTo(size-m-size*0.14, size/2);
+    octx.closePath();
+    octx.fill();
+
+    octx.fillRect(
+      size-m-size*0.14, m, size*0.14, size-2*m
+    );
+
+  }else if(type === "play"){
+
+    octx.beginPath();
+    octx.moveTo(m+size*0.05, m);
+    octx.lineTo(m+size*0.05, size-m);
+    octx.lineTo(size-m, size/2);
+    octx.closePath();
+    octx.fill();
+
+  }else if(type === "pause"){
+
+    const bw = size*0.20;
+
+    octx.fillRect(size*0.26, m, bw, size-2*m);
+    octx.fillRect(size*0.54, m, bw, size-2*m);
+
+  }
+
+  return octx.getImageData(0,0,size,size);
+
+}
+
+function getIconTeeth(type){
+
+  const key = type;
+
+  if(iconCache[key])
+    return iconCache[key];
+
+  const size = 64;
+
+  const mask = buildIconMask(type, size);
+
+  const out = document.createElement("canvas");
+
+  out.width = size;
+  out.height = size;
+
+  const outCtx = out.getContext("2d");
+
+  drawTeethFromMask(
+    outCtx, mask, size, size, 0, 0, 4, 6, "#fff"
+  );
+
+  iconCache[key] = out;
+
+  return out;
+
+}
+
+let iconSlots = [];
+
+function drawControls(){
+
+  const w = controlsCanvas.clientWidth;
+  const h = controlsCanvas.clientHeight;
+
+  controlsCtx.clearRect(0,0,w,h);
+
+  const size = h*0.9;
+
+  const centerType =
+    (started && !audio.paused) ? "pause" : "play";
+
+  const types = ["prev", centerType, "next"];
+
+  const xs = [
+    w*0.22 - size/2,
+    w*0.5 - size/2,
+    w*0.78 - size/2
+  ];
+
+  iconSlots = [];
+
+  for(let i=0;i<3;i++){
+
+    const icon = getIconTeeth(types[i]);
+
+    controlsCtx.drawImage(
+      icon, xs[i], (h-size)/2, size, size
+    );
+
+    iconSlots.push({
+      type: types[i],
+      x0: xs[i],
+      x1: xs[i]+size,
+      y0: (h-size)/2,
+      y1: (h-size)/2+size
+    });
+
+  }
+
+}
+
+
+/* ==================================================
+   START PLAYER
+================================================== */
+
+let started = false;
+
+async function start(){
+
+  setupAudio();
+
+  if(audioContext && audioContext.state === "suspended"){
+
+    try{ await audioContext.resume(); }catch(e){}
+
+  }
+
+  if(!started){
+
+    video.currentTime = 0;
+    audio.currentTime = 0;
+
+  }
+
+  started = true;
+
+  video.muted = true;
+
+  video.play().catch(
+    e => console.log("Video autoplay:", e)
+  );
+
+  audio.volume = 1;
+
+  audio.play().catch(
+    e => {
+
+      console.log("Audio autoplay diblokir browser:", e);
+      started = false;
+
+    }
+  );
+
+}
+
+function togglePlayPause(){
+
+  if(!started){
+
+    start();
+    return;
+
+  }
+
+  if(audio.paused){
+
+    audio.play().catch(()=>{});
+    video.play().catch(()=>{});
+
+  }else{
+
+    audio.pause();
+    video.pause();
+
+  }
+
+}
+
+function seekBy(deltaSeconds){
+
+  if(!audio.duration)
+    return;
+
+  let t = audio.currentTime + deltaSeconds;
+
+  t = Math.max(0, Math.min(audio.duration, t));
+
+  audio.currentTime = t;
+  video.currentTime = t;
+
+}
+
+
+/* ==================================================
+   INTERAKSI TOMBOL KONTROL
+================================================== */
+
+function handleControlsClick(clientX, clientY){
+
+  const rect = controlsCanvas.getBoundingClientRect();
+
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+
+  for(const slot of iconSlots){
+
+    if(x>=slot.x0 && x<=slot.x1 && y>=slot.y0 && y<=slot.y1){
+
+      if(slot.type === "prev"){
+
+        seekBy(-10);
+
+      }else if(slot.type === "next"){
+
+        seekBy(10);
+
+      }else{
+
+        togglePlayPause();
+
+      }
+
+      return;
+
+    }
+
+  }
+
+  /*
+    Klik di area kontrol tapi di luar ikon:
+    tetap toggle play/pause supaya gampang
+    dipakai sebagai tombol utama.
+  */
+
+  togglePlayPause();
+
+}
+
+controlsCanvas.addEventListener("click", e => {
+
+  handleControlsClick(e.clientX, e.clientY);
+
+});
+
+controlsCanvas.addEventListener("touchstart", e => {
+
+  e.preventDefault();
+
+  const t = e.changedTouches[0];
+
+  handleControlsClick(t.clientX, t.clientY);
+
+}, {passive:false});
+
+
+/* ==================================================
+   AUTO START
+================================================== */
+
+window.addEventListener("load", () => {
+
+  resize();
+  drawTitle();
+
+  start();
+
+});
+
+video.addEventListener("canplay", () => {
+
+  if(!started)
+    start();
+
+});
+
+
+/* ==================================================
+   AUDIO / VIDEO SYNC
+================================================== */
+
+setInterval(() => {
+
+  if(!started || audio.paused || video.readyState<2)
+    return;
+
+  const difference =
+    video.currentTime - audio.currentTime;
+
+  if(Math.abs(difference) > 0.08){
+
+    video.currentTime = audio.currentTime;
+
+  }
+
+}, 150);
+
+
+/* ==================================================
+   LOOP
+================================================== */
+
+audio.addEventListener("ended", () => {
+
+  audio.currentTime = 0;
+  video.currentTime = 0;
+
+  audio.play().catch(()=>{});
+  video.play().catch(()=>{});
+
+});
+
+
+/* ==================================================
+   MAIN LOOP
+================================================== */
+
+function animate(){
+
+  drawASCII();
+
+  pushWaveSample();
+  drawWaveform();
+
+  drawProgressBar();
+  drawControls();
+
+  updateLyrics();
+  drawTitle();
+
+  requestAnimationFrame(animate);
+
+}
+
+resize();
+drawTitle();
+
+animate();
+
+
+})();
+</script>
+
+</body>
+</html>
